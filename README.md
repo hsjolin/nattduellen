@@ -47,6 +47,7 @@ ESP32-kärnan, ingen extra bibliotek behövs). Sök efter "ESP32 DevKit v1" /
 | **Arduino UNO R4 WiFi** (enskilt kort eller Starter Kit R4, Kjell p88445) | kort ~350–400 kr, kit ~1 400 kr | **Fungerar också!** BLE via ESP32-S3-coprocessorn (biblioteket ArduinoBLE). Kitet innehåller breadboard, kablar, motstånd, lysdioder, sensorer m.m. — men är betydligt dyrare än ESP32 + lösa delar. Se avsnitt 3b och kodvarianten i `arduino-uno-r4-wifi/`. |
 | Arduino Nano ESP32 | 250–300 kr | Officiellt Arduino-märke, också BLE; andra pin-nummer. |
 | Raspberry Pi Pico W | ~80 kr | Har BLE men Web Bluetooth mot Pico kräver annan firmware/profil. |
+| Kjells **Arduino Startpaket** (UNO R3-kompatibelt, p87875) | ~899 kr | UNO R3 har **ingen WiFi/BLE själv**, men kitet täcker alla tillbehör (breadboard, kablar, 220 Ω, lysdioder, USB). Lägg till en **HM-10 BLE-modul** (~60–100 kr) — se avsnitt 3c och `arduino-uno-hm10/`. |
 
 ## 2. Komponentlista
 
@@ -104,6 +105,35 @@ mot ESP32-varianten:
 - **Ström:** USB-C, samma som innan (powerbank/mobilladdare ≥1 A).
 - Kitet innehåller redan breadboard, kablar, motstånd och lysdioder, så
   tillbehörslistan i avsnitt 2 är i princip täckt av kitet.
+
+## 3c. Har du köpt Kjells Arduino Startpaket (UNO R3, p87875)?
+
+Paketet innehåller ett **UNO R3-kompatibelt kort (CH340)** — det har ingen
+inbyggd WiFi eller Bluetooth, så BLE-firmwaren ovan kan inte köras direkt på
+kortet. Däremot täcker kitet alla tillbehör du behöver (breadboard, kablar,
+220 Ω-motstånd, 5 mm-LED, USB-kabel, 9V-klips). Två alternativ:
+
+**Alternativ A – komplettera med en HM-10 BLE-modul (~60–100 kr, finns hos
+t.ex. Electrokit/Kjell):** använd kodvarianten
+`arduino-uno-hm10/arduino-uno-hm10.ino`. Webbappen växlar automatiskt till
+HM-10:s UUIDer (FFE0/FFE1). Koppling:
+
+| HM-10 | Kopplas till | Kommentar |
+|---|---|---|
+| VCC | 5V (om breakout har regulator), annars 3.3V | |
+| GND | GND | |
+| TXD | D10 | UNO RX (SoftwareSerial) |
+| RXD | D11 via spänningsdelare: D11 —[1 kΩ]—•— RXD, •—[2 kΩ]— GND | HM-10 har 3.3 V-logik; 5 V från UNO måste ner till ≤3.3 V |
+
+Lysdioderna kopplas som i avsnitt 3b (D2–D6, 220 Ω till GND). I Arduino IDE:
+bräda **"Arduino Uno"**, port = COM-porten för CH340 (installera CH340-drivrutin
+vid behov). HM-10 sätts automatiskt till BLE-namnet `Nattduellen-XXXXXX` vid
+uppstart, så appens sökning fungerar ändå.
+
+**Alternativ B – byt eller komplettera kortet:** Kjell har 100 dagars öppet
+köp — byt paketet mot **Starter Kit R4** (p88445, UNO R4 WiFi med inbyggd BLE,
+avsnitt 3b) eller köp ett enskilt **ESP32 DevKit** (~80 kr) och använd
+`arduino-uno-r4-wifi`-varianten eller huvudsketchen (`nattduellen.ino`).
 
 ## 4. Steg för steg
 

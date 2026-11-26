@@ -52,10 +52,16 @@
 <button id="stop" disabled>&#9632; STOPPA</button>
 
 <script>
-// Nordic UART Service – samma UUIDer som i ESP32-firmwaren
-const NUS_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
-const NUS_RX      = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // vi skriver hit
-const NUS_TX      = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // vi får notify här
+// Två BLE-varianter stöds (väljs automatiskt vid anslutning):
+//  NUS  = Nordic UART Service (ESP32 DevKit / UNO R4 WiFi, inbyggd BLE)
+//  HM10 = HM-10-modulens standard-UUIDer (UNO R3 + HM-10)
+const NUS  = { service: '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
+               rx: '6e400002-b5a3-f393-e0a9-e50e24dcca9e',   // vi skriver hit
+               tx: '6e400003-b5a3-f393-e0a9-e50e24dcca9e' }; // vi får notify här
+const HM10 = { service: '0000ffe0-0000-1000-8000-00805f9b34fb',
+               rx: '0000ffe1-0000-1000-8000-00805f9b34fb',
+               tx: '0000ffe1-0000-1000-8000-00805f9b34fb' };
+let UUIDS = NUS;
 
 const $ = id => document.getElementById(id);
 const connEl = $('conn'), statusEl = $('status'),
@@ -75,7 +81,7 @@ findBtn.onclick = async () => {
   try {
     device = await navigator.bluetooth.requestDevice({
       filters: [{ namePrefix: 'Nattduellen' }],
-      optionalServices: [NUS_SERVICE]
+      optionalServices: [NUS.service, HM10.service]
     });
   } catch (e) {
     statusEl.textContent = 'Ingen enhet vald (' + e.message + ')';
@@ -84,9 +90,16 @@ findBtn.onclick = async () => {
   device.addEventListener('gattserverdisconnected', onDisconnect);
   try {
     const server = await device.gatt.connect();
-    const service = await server.getPrimaryService(NUS_SERVICE);
-    txChar = await service.getCharacteristic(NUS_TX);
-    rxChar = await service.getCharacteristic(NUS_RX);
+    let service;
+    try {
+      service = await server.getPrimaryService(NUS.service);
+      UUIDS = NUS;
+    } catch (e) {
+      service = await server.getPrimaryService(HM10.service);  // HM-10-variant
+      UUIDS = HM10;
+    }
+    txChar = await service.getCharacteristic(UUIDS.tx);
+    rxChar = await service.getCharacteristic(UUIDS.rx);
     await txChar.startNotifications();
     txChar.addEventListener('characteristicvaluechanged', onNotify);
     connEl.textContent = 'Ansluten till ' + (device.name || 'Nattduellen');
