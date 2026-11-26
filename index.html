@@ -4,8 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Nattduellen</title>
-<!-- MQTT.js över WebSocket (WSS) – hämtas från CDN, appen är helt statisk -->
-<script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
+<link rel="manifest" href="manifest.webmanifest">
 <style>
   :root{color-scheme:dark}
   body{font-family:system-ui,sans-serif;background:#0b1020;color:#e8ecff;
@@ -13,46 +12,38 @@
        margin:0;padding:24px;box-sizing:border-box}
   h1{font-size:2rem;margin:8px 0 14px}
   .hint{color:#8fa0d0;font-size:.95rem;max-width:36em;text-align:center;margin-bottom:16px}
-  .row{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:12px}
-  input{font-size:1.4rem;letter-spacing:.3em;text-transform:uppercase;width:8.5em;
-        padding:10px;text-align:center;background:#141b36;color:#e8ecff;
-        border:2px solid #46538a;border-radius:10px}
-  button{font-size:1.05rem;font-weight:bold;border:none;border-radius:10px;
-         padding:12px 20px;cursor:pointer}
-  #connect{background:#3b82f6;color:#fff}
-  #search{background:#46538a;color:#e8ecff}
-  #start{background:#2ecc71;color:#06210f;font-size:1.4rem;width:min(320px,80vw);
-         padding:16px;margin-top:10px}
+  button{font-size:1.1rem;font-weight:bold;border:none;border-radius:10px;
+         padding:14px 22px;cursor:pointer;margin:6px}
+  #find{background:#3b82f6;color:#fff}
+  #start{background:#2ecc71;color:#06210f;font-size:1.4rem;width:min(320px,80vw);padding:16px}
   #start:disabled{background:#1d5c3e;color:#9fc7ae;cursor:default}
-  #stop{background:#e74c3c;color:#2b0703;font-size:1.4rem;width:min(320px,80vw);
-        padding:16px;margin-top:8px}
+  #stop{background:#e74c3c;color:#2b0703;font-size:1.4rem;width:min(320px,80vw);padding:16px}
   #stop:disabled{background:#5c1d1d;color:#c7a0a0;cursor:default}
-  #conn{font-size:.9rem;color:#8fa0d0;margin-bottom:10px}
+  #conn{font-size:.95rem;color:#8fa0d0;margin-bottom:10px;text-align:center}
   #status{font-size:1.3rem;min-height:2.2em;text-align:center;margin-bottom:16px}
   #lamps{display:flex;gap:14px;margin-bottom:24px}
   .lamp{width:42px;height:42px;border-radius:50%;background:#2a3357;
         border:2px solid #46538a;transition:all .15s}
   .lamp.on{background:#ffd94d;border-color:#ffe89a;
            box-shadow:0 0 18px 4px rgba(255,217,77,.55)}
-  #found{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:12px}
-  .dev{background:#1d5c3e;border:1px solid #2ecc71;color:#d9ffe6;border-radius:8px;
-       padding:8px 14px;cursor:pointer;font-size:1.1rem;letter-spacing:.2em}
+  #warn{display:none;background:#5c1d1d;color:#ffd7d7;border-radius:10px;
+        padding:12px 16px;max-width:36em;text-align:center;margin-bottom:14px}
 </style>
 </head>
 <body>
 <h1>&#127769; Nattduellen</h1>
+<div id="warn">
+  Web Bluetooth stöds inte i denna webbläsare. Använd <b>Chrome eller Edge</b>
+  (Android eller dator) och öppna sidan över <b>HTTPS</b>.
+</div>
 <div class="hint">
-  Ange enhetskoden (6 tecken, visas i ESP32:ns Serial Monitor vid uppstart)
-  eller sök efter enheter som är online just nu.
+  Sätt på spelet (USB-ström), öppna denna sida på telefonen och tryck
+  <b>Sök &amp; anslut</b> – välj din <i>Nattduellen-XXXXXX</i> i listan.
+  Ingen WiFi eller router behövs.
 </div>
-<div class="row">
-  <input id="code" maxlength="6" placeholder="KOD" autocomplete="off" spellcheck="false">
-  <button id="search">&#128269; Sök enheter</button>
-  <button id="connect">Anslut</button>
-</div>
-<div id="found"></div>
-<div id="conn">Broker: frånkopplad</div>
-<div id="status">Ingen enhet vald</div>
+<button id="find">&#128269; Sök &amp; anslut (Bluetooth)</button>
+<div id="conn">Ej ansluten</div>
+<div id="status">Väntar på anslutning…</div>
 <div id="lamps">
   <div class="lamp"></div><div class="lamp"></div><div class="lamp"></div>
   <div class="lamp"></div><div class="lamp"></div>
@@ -61,161 +52,122 @@
 <button id="stop" disabled>&#9632; STOPPA</button>
 
 <script>
-// Publik MQTT-broker med WebSocket+TLS. Samma broker som ESP32:n når på
-// port 8883 (vanlig MQTT/TLS); webbläsaren använder WSS på port 8884.
-const BROKER_URL = 'wss://broker.hivemq.com:8884/mqtt';
+// Nordic UART Service – samma UUIDer som i ESP32-firmwaren
+const NUS_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_RX      = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // vi skriver hit
+const NUS_TX      = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // vi får notify här
 
 const $ = id => document.getElementById(id);
-const statusEl = $('status'), connEl = $('conn'), foundEl = $('found'),
-      startBtn = $('start'), stopBtn = $('stop'), codeEl = $('code'),
-      searchBtn = $('search');
+const connEl = $('conn'), statusEl = $('status'),
+      findBtn = $('find'), startBtn = $('start'), stopBtn = $('stop');
 const lamps = $('lamps').children;
 
-let client = null;
-let deviceCode = null;     // vald enhetskod
-let deviceOnline = false;
-let lastState = null;      // senaste state-JSON från enheten
-let lastRecv = 0;          // när vi tog emot det (lokala klockan, ms)
-let searching = false;
+let device = null, rxChar = null, txChar = null;
+let lastState = null, lastRecv = 0;
 
-function setConn(t){ connEl.textContent = t; }
-
-function ensureClient(){
-  if (client) return client;
-  client = mqtt.connect(BROKER_URL, { connectTimeout: 8000, reconnectPeriod: 3000, clean: true });
-  client.on('connect', () => {
-    setConn('Broker: ansluten');
-    if (deviceCode) subscribeDevice();
-    if (searching) client.subscribe('nattduellen/+/online');
-  });
-  client.on('reconnect', () => setConn('Broker: återansluter…'));
-  client.on('offline',   () => setConn('Broker: frånkopplad'));
-  client.on('error',     () => setConn('Broker: fel – kontrollera internetanslutningen'));
-  client.on('message', onMessage);
-  return client;
+if (!('bluetooth' in navigator)) {
+  $('warn').style.display = 'block';
+  findBtn.disabled = true;
 }
 
-function topics(){
-  return {
-    cmd:    'nattduellen/' + deviceCode + '/cmd',
-    state:  'nattduellen/' + deviceCode + '/state',
-    online: 'nattduellen/' + deviceCode + '/online'
-  };
-}
-
-function subscribeDevice(){
-  const t = topics();
-  client.subscribe([t.state, t.online]);
-}
-
-function onMessage(topic, payload){
-  const msg = payload.toString();
-  if (searching && topic.endsWith('/online')){
-    if (msg === '1') addFoundDevice(topic.split('/')[1]);
+// ------------------- Sök & anslut över Bluetooth LE -------------------------
+findBtn.onclick = async () => {
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'Nattduellen' }],
+      optionalServices: [NUS_SERVICE]
+    });
+  } catch (e) {
+    statusEl.textContent = 'Ingen enhet vald (' + e.message + ')';
     return;
   }
-  if (!deviceCode) return;
-  const t = topics();
-  if (topic === t.online){
-    deviceOnline = (msg === '1');
+  device.addEventListener('gattserverdisconnected', onDisconnect);
+  try {
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(NUS_SERVICE);
+    txChar = await service.getCharacteristic(NUS_TX);
+    rxChar = await service.getCharacteristic(NUS_RX);
+    await txChar.startNotifications();
+    txChar.addEventListener('characteristicvaluechanged', onNotify);
+    connEl.textContent = 'Ansluten till ' + (device.name || 'Nattduellen');
+    statusEl.textContent = 'Ansluten – redo, tryck STARTA';
+    updateButtons();
+  } catch (e) {
+    connEl.textContent = 'Kunde inte ansluta: ' + e.message;
+  }
+};
+
+function onDisconnect() {
+  connEl.textContent = 'Frånkopplad – tryck "Sök & anslut" igen';
+  statusEl.textContent = 'Frånkopplad';
+  lastState = null;
+  paintLamps(null);
+  updateButtons();
+}
+
+function onNotify(event) {
+  const text = new TextDecoder().decode(event.target.value);
+  let msg;
+  try { msg = JSON.parse(text); } catch (e) { return; }
+  if (msg.type === 'hello') {
+    connEl.textContent = 'Ansluten till ' + (device ? device.name : '') +
+                        ' (kod ' + msg.id + ')';
+  } else if (msg.type === 'state') {
+    lastState = msg;
+    lastRecv = Date.now();
     updateStatus();
-  } else if (topic === t.state){
-    try { lastState = JSON.parse(msg); lastRecv = Date.now(); updateStatus(); }
-    catch(e) { /* ignorera trasiga meddelanden */ }
   }
 }
 
-// ------------------------- Sök efter enheter --------------------------------
-function addFoundDevice(code){
-  if (foundEl.querySelector('[data-code="' + code + '"]')) return;
-  const b = document.createElement('button');
-  b.className = 'dev';
-  b.textContent = code;
-  b.dataset.code = code;
-  b.onclick = () => { codeEl.value = code; stopSearch(); connectDevice(); };
-  foundEl.appendChild(b);
-}
-
-function startSearch(){
-  ensureClient();
-  searching = true;
-  foundEl.innerHTML = '';
-  searchBtn.innerHTML = '&#9209; Stoppa sökning';
-  if (client.connected) client.subscribe('nattduellen/+/online');
-  setTimeout(() => { if (searching) stopSearch(); }, 8000);
-}
-
-function stopSearch(){
-  searching = false;
-  foundEl.innerHTML = '';
-  searchBtn.innerHTML = '&#128269; Sök enheter';
-  if (client && client.connected) client.unsubscribe('nattduellen/+/online');
-}
-
-searchBtn.onclick = () => { searching ? stopSearch() : startSearch(); };
-
-// ------------------------- Anslut till enhet --------------------------------
-function connectDevice(){
-  const code = codeEl.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-  if (code.length !== 6){ statusEl.textContent = 'Ange en kod på 6 tecken.'; return; }
-  deviceCode = code;
-  deviceOnline = false;
-  lastState = null;
-  ensureClient();
-  if (client.connected) subscribeDevice();
-  statusEl.textContent = 'Ansluter till enhet ' + code + ' …';
-}
-
-$('connect').onclick = connectDevice;
-codeEl.addEventListener('input', () => { codeEl.value = codeEl.value.toUpperCase(); });
-codeEl.addEventListener('keydown', e => { if (e.key === 'Enter') connectDevice(); });
-
-// ------------------------- Spelknappar --------------------------------------
-function sendCmd(cmd){
-  if (client && client.connected && deviceCode){
-    client.publish(topics().cmd, cmd, { qos: 1 });
+// --------------------------- Spel-API ---------------------------------------
+async function sendCmd(cmd) {
+  if (!rxChar) return;
+  const data = new TextEncoder().encode(JSON.stringify({ cmd }));
+  try {
+    await rxChar.writeValue(data);   // skriver till NUS RX på ESP32:n
+  } catch (e) {
+    statusEl.textContent = 'Kunde inte skicka kommando: ' + e.message;
   }
 }
 startBtn.onclick = () => sendCmd('start');
 stopBtn.onclick  = () => sendCmd('stop');
 
-// ------------------------- Status & lampor ----------------------------------
-function paintLamps(s){
-  for (let i = 0; i < lamps.length; i++){
+// --------------------------- Status & lampor --------------------------------
+function paintLamps(s) {
+  for (let i = 0; i < lamps.length; i++) {
     const on = s && (s.state === 'armed' || (s.state === 'done' && i !== s.darkLed));
     lamps[i].classList.toggle('on', !!on);
   }
 }
 
-function updateStatus(){
-  if (!deviceCode){ statusEl.textContent = 'Ingen enhet vald'; return; }
-  if (!deviceOnline){
-    statusEl.textContent = 'Enhet ' + deviceCode + ' är offline';
-    startBtn.disabled = stopBtn.disabled = true;
-    paintLamps(null);
-    return;
-  }
+function updateButtons() {
+  const connected = !!(device && device.gatt && device.gatt.connected);
+  startBtn.disabled = !connected || (lastState && lastState.state === 'armed');
+  stopBtn.disabled = !connected;
+}
+
+function updateStatus() {
+  updateButtons();
   const s = lastState;
-  startBtn.disabled = !s || s.state === 'armed';
-  stopBtn.disabled = false;
-  if (!s){
-    statusEl.textContent = 'Enhet ' + deviceCode + ' online – redo';
-    paintLamps(null);
-    return;
-  }
-  if (s.state === 'armed'){
-    const el = s.elapsedMs + (Date.now() - lastRecv);  // räkna vidare lokalt mellan meddelanden
-    statusEl.textContent = 'Alla lampor tända… håll utkik! (' + (el/1000).toFixed(1) + ' s)';
-  } else if (s.state === 'done'){
+  if (!s) return;
+  if (s.state === 'armed') {
+    const el = s.elapsedMs + (Date.now() - lastRecv); // räkna vidare lokalt mellan notifieringar
+    statusEl.textContent = 'Alla lampor tända… håll utkik! (' + (el / 1000).toFixed(1) + ' s)';
+  } else if (s.state === 'done') {
     statusEl.textContent = '💥 Lampa ' + (s.darkLed + 1) + ' slocknade efter ' +
-                          (s.elapsedMs/1000).toFixed(2) + ' s!';
+                          (s.elapsedMs / 1000).toFixed(2) + ' s!';
   } else {
-    statusEl.textContent = 'Enhet ' + deviceCode + ' online – redo, tryck STARTA';
+    statusEl.textContent = 'Redo – tryck STARTA';
   }
   paintLamps(s);
 }
 
-setInterval(updateStatus, 150);
+setInterval(() => { if (lastState && lastState.state === 'armed') updateStatus(); }, 150);
+
+// Gör appen körbar även offline efter första besöket (valfritt, PWA)
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js');
+}
 </script>
 </body>
 </html>

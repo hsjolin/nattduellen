@@ -1,34 +1,37 @@
 /*
   ============================================================================
-  NATTDUELLEN - fristående webbapp över internet (MQTT över TLS)
+  NATTDUELLEN - lokal uppkoppling via Bluetooth LE (BLE)
   ----------------------------------------------------------------------------
   Hårdvara : ESP32 DevKit (WROOM-32) + 5 lysdioder + 5 motstånd (220 ohm)
-  Mjukvara : Arduino IDE 2.x + ESP32-kärnan + biblioteket PubSubClient
-  Kommunikation: ESP32 ansluter till ditt WiFi och vidare ut till en publik
-             MQTT-broker över TLS (broker.hivemq.com:8883). Webbappen
-             (https://hsjolin.github.io/nattduellen/) pratar WSS mot samma
-             broker. Ingen portöppning i router behövs.
-  Enhet     : Vid första boot skapas en slumpmässig enhetskod (6 tecken) som
-             sparas i flash och skrivs till Serial Monitor. Koden används i
-             webbappen för att hitta/ansluta till just din enhet.
-  Spelidé  : Alla 5 dioder tänds vid "start". Efter en slumpmässig tid
-             (3-10 s) slocknar en slumpmässigt vald diod. "stop" nollställer.
+  Mjukvara : Arduino IDE 2.x + ESP32-kärnan (BLE-biblioteket är inbyggt)
+  Kommunikation: Webbappen (HTTPS, t.ex. GitHub Pages) öppnas i Chrome/Edge
+  på telefonen, söker efter enheten "Nattduellen-XXXXXX" via Web Bluetooth
+  och kopplar upp över BLE. All trafik går lokalt telefon <-> ESP32 -
+  ingen WiFi, router eller internet behövs för själva spelet.
+
+  BLE-API (Nordic UART Service, enkel text/JSON-kanal):
+    Telefon skriver till RX:   {"cmd":"start"} eller {"cmd":"stop"}
+    ESP32 notifierar på TX:   {"type":"hello","id":"XK7Q2M"}
+                              {"type":"state","state":"idle|armed|done",
+                               "darkLed":0-4,"elapsedMs":ms}
   ============================================================================
 */
 
 #include <Arduino.h>
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <PubSubClient.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLEService.h>
+#include <BLECharacteristic.h>
+#include <BLE2902.h>
 #include <Preferences.h>
 
+// Nordic UART Service (NUS) - standard-UUIDer för enkel BLE-seriekanal
+#define NUS_SERVICE_UUID "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+#define NUS_RX_UUID      "6e400002-b5a3-f393-e0a9-e50e24dcca9e"  // telefonen skriver hit
+#define NUS_TX_UUID      "6e400003-b5a3-f393-e0a9-e50e24dcca9e"  // telefonen får notify här
+
 // ------------------------- Konfiguration -----------------------------------
-const char* WIFI_SSID = "ditt-wifi-namn";      // ditt eget WiFi (med internet)
-const char* WIFI_PASS = "ditt-wifi-losenord";
-
-const char* MQTT_HOST = "broker.hivemq.com";   // publik broker
-const uint16_t MQTT_PORT = 8883;               // MQTT över TLS
-
 // GPIO-pinnar för lysdioderna (säkra pinnar på ESP32 DevKit / WROOM-32)
 const int LED_PINS[5] = {25, 26, 27, 32, 33};
 const int NUM_LEDS    = 5;
@@ -37,14 +40,10 @@ const int NUM_LEDS    = 5;
 const unsigned long MIN_WAIT_MS = 3000;
 const unsigned long MAX_WAIT_MS = 10000;
 
-// ------------------------- Enhet & MQTT-topics ------------------------------
-char deviceId[7];          // 6 tecken + nullterminering
-char topicCmd[48];         // nattduellen/<kod>/cmd     <- start/stop från appen
-char topicState[48];       // nattduellen/<kod>/state   -> speltillstånd till appen
-char topicOnline[48];      // nattduellen/<kod>/online  -> retained "1"/LWT "0"
+// ------------------------- Enhet --------------------------------------------
+char deviceId[7];        // 6 tecken + null (sparas i flash)
+char deviceName[24];     // BLE-namn, t.ex. "Nattduellen-XK7Q2M"
 
-WiFiClientSecure net;
-PubSubClient mqtt(net);
 Preferences prefs;
 
 // ------------------------- Speltillstånd -----------------------------------
@@ -56,9 +55,22 @@ unsigned long waitMs = 0;
 unsigned long doneAtMs = 0;
 unsigned long lastStatePub = 0;
 
+BLEServer* bleServer = nullptr;
+BLECharacteristic* txChar = nullptr;
+volatile bool deviceConnected = false;
+volatile bool helloPending = false;
+
 void setAllLeds(bool on) {
   for (int i = 0; i < NUM_LEDS; i++) {
     digitalWrite(LED_PINS[i], on ? HIGH : LOW);
+  }
+}
+
+void sendJson(const char* json) {
+  Serial.println(json);
+  if (deviceConnected && txChar) {
+    txChar->setValue((const uint8_t*)json, strlen(json));
+    txChar->notify();
   }
 }
 
@@ -68,9 +80,10 @@ void publishState() {
   if (state == DONE)  elapsed = doneAtMs - armedAtMs;
   const char* name = (state == IDLE) ? "idle" : (state == ARMED) ? "armed" : "done";
   char buf[96];
-  snprintf(buf, sizeof(buf), "{\"state\":\"%s\",\"darkLed\":%d,\"elapsedMs\":%lu}",
+  snprintf(buf, sizeof(buf),
+           "{\"type\":\"state\",\"state\":\"%s\",\"darkLed\":%d,\"elapsedMs\":%lu}",
            name, darkLed, elapsed);
-  mqtt.publish(topicState, buf, true);   // retained så nya lyssnare ser läget direkt
+  sendJson(buf);
 }
 
 void startGame() {
@@ -91,33 +104,50 @@ void stopGame() {
   publishState();
 }
 
-void onMqttMessage(char* topic, byte* payload, unsigned int len) {
-  char msg[16];
-  unsigned int n = min(len, (unsigned int)(sizeof(msg) - 1));
-  memcpy(msg, payload, n);
-  msg[n] = '\0';
-  if (strcmp(topic, topicCmd) == 0) {
-    if (strcmp(msg, "start") == 0) startGame();
-    else if (strcmp(msg, "stop") == 0) stopGame();
+// ------------------------- BLE-callbacks ------------------------------------
+class RxCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* c) override {
+    std::string v = c->getValue();
+    if (v.find("\"start\"") != std::string::npos) startGame();
+    else if (v.find("\"stop\"") != std::string::npos) stopGame();
   }
+};
+
+class ServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer* s) override {
+    deviceConnected = true;
+    helloPending = true;
+  }
+  void onDisconnect(BLEServer* s) override {
+    deviceConnected = false;
+    s->startAdvertising();   // börja sända igen så appen kan koppla upp på nytt
+  }
+};
+
+void setupBLE() {
+  BLEDevice::init(deviceName);
+  bleServer = BLEDevice::createServer();
+  bleServer->setCallbacks(new ServerCallbacks());
+
+  BLEService* svc = bleServer->createService(NUS_SERVICE_UUID);
+
+  txChar = svc->createCharacteristic(NUS_TX_UUID, BLECharacteristic::PROPERTY_NOTIFY);
+  txChar->addDescriptor(new BLE2902());   // krävs för att klienten ska få notify
+
+  BLECharacteristic* rxChar = svc->createCharacteristic(
+      NUS_RX_UUID, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+  rxChar->setCallbacks(new RxCallbacks());
+
+  svc->start();
+
+  BLEAdvertising* adv = BLEDevice::getAdvertising();
+  adv->addServiceUUID(NUS_SERVICE_UUID);
+  adv->setScanResponse(true);   // namnet ligger i scan response (får ej plats i annonsen)
+  BLEDevice::startAdvertising();
+  Serial.printf("BLE sänder som \"%s\" - sök efter detta namn i webbappen\n", deviceName);
 }
 
-bool mqttConnect() {
-  String clientId = String("nattduellen-") + deviceId + "-" +
-                    String(esp_random() & 0xFFFF, HEX);
-  // Last Will: "0" på online-topic om anslutningen dör oväntat
-  boolean ok = mqtt.connect(clientId.c_str(), topicOnline, 0, true, "0");
-  if (ok) {
-    mqtt.publish(topicOnline, "1", true);
-    mqtt.subscribe(topicCmd);
-    Serial.println("MQTT-broker ansluten");
-  } else {
-    Serial.printf("MQTT misslyckades, rc=%d\n", mqtt.state());
-  }
-  return ok;
-}
-
-// ------------------------- Setup & loop ------------------------------------
+// ------------------------- Setup & loop -------------------------------------
 void setup() {
   for (int i = 0; i < NUM_LEDS; i++) {
     pinMode(LED_PINS[i], OUTPUT);
@@ -141,55 +171,36 @@ void setup() {
   }
   prefs.end();
 
-  snprintf(topicCmd,    sizeof(topicCmd),    "nattduellen/%s/cmd",    deviceId);
-  snprintf(topicState,  sizeof(topicState),  "nattduellen/%s/state",  deviceId);
-  snprintf(topicOnline, sizeof(topicOnline), "nattduellen/%s/online", deviceId);
+  snprintf(deviceName, sizeof(deviceName), "Nattduellen-%s", deviceId);
+  Serial.printf("Enhetskod: %s\n", deviceId);
 
-  Serial.printf("Enhetskod: %s   (används i webbappen)\n", deviceId);
-
-  // Anslut till WiFi (internet krävs för att nå brokern)
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.print("Ansluter till WiFi");
-  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
-  Serial.println();
-  Serial.print("WiFi ansluten, IP: "); Serial.println(WiFi.localIP());
-
-  net.setInsecure();   // hoppar över certifikatvalidering (OK för hobbybruk)
-  mqtt.setServer(MQTT_HOST, MQTT_PORT);
-  mqtt.setCallback(onMqttMessage);
-  mqtt.setBufferSize(512);
+  setupBLE();
 }
 
-unsigned long lastReconnectAttempt = 0;
-
 void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
-    WiFi.reconnect();
+  // Skicka hälsning + aktuellt läge så fort någon kopplar upp
+  if (helloPending && deviceConnected) {
+    helloPending = false;
+    char hello[48];
+    snprintf(hello, sizeof(hello), "{\"type\":\"hello\",\"id\":\"%s\"}", deviceId);
+    sendJson(hello);
+    publishState();
   }
 
-  if (!mqtt.connected()) {
-    if (millis() - lastReconnectAttempt > 5000) {
-      lastReconnectAttempt = millis();
-      mqttConnect();
-    }
-  } else {
-    mqtt.loop();
-
-    // När väntetiden gått ut: släck den valda dioden
-    if (state == ARMED && (millis() - armedAtMs) >= waitMs) {
-      digitalWrite(LED_PINS[darkLed], LOW);
-      doneAtMs = millis();
-      state = DONE;
-      Serial.printf("Lampa %d slocknade efter %lu ms\n",
-                    darkLed + 1, doneAtMs - armedAtMs);
-      publishState();
-    }
-
-    // Skicka uppdaterat läge löpande medan spelet är igång (för timern i appen)
-    if (state == ARMED && (millis() - lastStatePub) > 300) {
-      lastStatePub = millis();
-      publishState();
-    }
+  // När väntetiden gått ut: släck den valda dioden
+  if (state == ARMED && (millis() - armedAtMs) >= waitMs) {
+    digitalWrite(LED_PINS[darkLed], LOW);
+    doneAtMs = millis();
+    state = DONE;
+    Serial.printf("Lampa %d slocknade efter %lu ms\n", darkLed + 1, doneAtMs - armedAtMs);
+    publishState();
   }
+
+  // Skicka uppdaterat läge löpande medan spelet är igång (för timern i appen)
+  if (state == ARMED && deviceConnected && (millis() - lastStatePub) > 300) {
+    lastStatePub = millis();
+    publishState();
+  }
+
+  delay(10);
 }
