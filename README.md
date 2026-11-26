@@ -1,6 +1,6 @@
 # 🌙 Nattduellen – portabelt spel med lokal Bluetooth-uppkoppling
 
-Ett MM-inspirerat spel: fem lysdioder tänds, och efter en slumpmässig
+Ett Mästarnas Mästare-inspirerat spel: fem lysdioder tänds, och efter en slumpmässig
 tid slocknar en av dem. Du bär med dig hela spelet (ESP32 + dioder + USB-ström)
 och styr det från en webbapp i telefonen — **utan WiFi, router eller internet
 för själva uppkopplingen**.
