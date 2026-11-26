@@ -43,7 +43,8 @@ ESP32-kärnan, ingen extra bibliotek behövs). Sök efter "ESP32 DevKit v1" /
 
 | Alternativ | Pris ca | Kommentar |
 |---|---|---|
-| **ESP32 DevKit v1 (WROOM-32)** | 60–120 kr | **Rekommenderas.** BLE inbyggt. GPIO 25/26/27/32/33 till dioderna. |
+| **ESP32 DevKit v1 (WROOM-32)** | 60–120 kr | **Rekommenderas om du köper bara kortet.** BLE inbyggt. GPIO 25/26/27/32/33 till dioderna. |
+| **Arduino UNO R4 WiFi** (enskilt kort eller Starter Kit R4, Kjell p88445) | kort ~350–400 kr, kit ~1 400 kr | **Fungerar också!** BLE via ESP32-S3-coprocessorn (biblioteket ArduinoBLE). Kitet innehåller breadboard, kablar, motstånd, lysdioder, sensorer m.m. — men är betydligt dyrare än ESP32 + lösa delar. Se avsnitt 3b och kodvarianten i `arduino-uno-r4-wifi/`. |
 | Arduino Nano ESP32 | 250–300 kr | Officiellt Arduino-märke, också BLE; andra pin-nummer. |
 | Raspberry Pi Pico W | ~80 kr | Har BLE men Web Bluetooth mot Pico kräver annan firmware/profil. |
 
@@ -72,6 +73,37 @@ Lysdiodens **anod (långa benet)** till GPIO, **katod (korta benet)** via
 | Lampa 3 | GPIO 27 | 220 Ω | GND |
 | Lampa 4 | GPIO 32 | 220 Ω | GND |
 | Lampa 5 | GPIO 33 | 220 Ω | GND |
+
+## 3b. Väljer du Arduino UNO R4 WiFi (Starter Kit R4)?
+
+UNO R4 WiFi **fungerar utmärkt** för detta projekt — kortet har Bluetooth LE
+(inbyggt via en ESP32-S3-coprocessor) och webbappen är oförändrad. Skillnaderna
+mot ESP32-varianten:
+
+- **Kod:** använd `arduino-uno-r4-wifi/arduino-uno-r4-wifi.ino` i detta repo
+  (samma BLE-API och JSON-protokoll, men skrivet mot biblioteket
+  **ArduinoBLE** istället för ESP32:s BLEDevice).
+- **Pinnar:** lysdioderna kopplas till Arduino-pin **D2–D6** (undvik D0/D1 som
+  är serieporten och D13 som är inbyggd LED):
+
+  | Lysdiod | UNO R4 pin | Motstånd | Till |
+  |---|---|---|---|
+  | Lampa 1 | D2 | 220 Ω | GND |
+  | Lampa 2 | D3 | 220 Ω | GND |
+  | Lampa 3 | D4 | 220 Ω | GND |
+  | Lampa 4 | D5 | 220 Ω | GND |
+  | Lampa 5 | D6 | 220 Ω | GND |
+
+- **Arduino IDE:** installera board-paketet **"Arduino UNO R4 Boards"** (av
+  Arduino), välj bräda **"Arduino UNO R4 WiFi"**, och installera biblioteket
+  **"ArduinoBLE"** (senaste versionen) via Library Manager. Porten visas som
+  USB-C-port (t.ex. COMx).
+- **Enhetskod:** slumpas vid varje uppstart (RA4M1 har ingen enkel
+  flash-lagring som ESP32) — läs den i Serial Monitor eller välj enheten i
+  appens söklista.
+- **Ström:** USB-C, samma som innan (powerbank/mobilladdare ≥1 A).
+- Kitet innehåller redan breadboard, kablar, motstånd och lysdioder, så
+  tillbehörslistan i avsnitt 2 är i princip täckt av kitet.
 
 ## 4. Steg för steg
 
