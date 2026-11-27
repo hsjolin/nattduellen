@@ -77,8 +77,12 @@ Lysdiodens **anod (långa benet)** till GPIO, **katod (korta benet)** via
 
 ## 3b. Väljer du Arduino UNO R4 WiFi (Starter Kit R4)?
 
-UNO R4 WiFi **fungerar utmärkt** för detta projekt — kortet har Bluetooth LE
-(inbyggt via en ESP32-S3-coprocessor) och webbappen är oförändrad. Skillnaderna
+⚠️ **Köp rätt modell:** välj **Arduino UNO R4 WiFi** (hos Kjell: artikel
+**p88079** "Arduino Uno Rev4 Wifi"). **UNO R4 Minima** (p88078) saknar WiFi
+och Bluetooth och fungerar **inte** för detta projekt.
+
+UNO R4 WiFi **fungerar utmärkt** — kortet har Bluetooth LE (inbyggt via en
+ESP32-S3-coprocessor) och webbappen är oförändrad. Skillnaderna
 mot ESP32-varianten:
 
 - **Kod:** använd `arduino-uno-r4-wifi/arduino-uno-r4-wifi.ino` i detta repo
